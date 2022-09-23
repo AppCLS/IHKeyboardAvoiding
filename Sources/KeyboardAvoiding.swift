@@ -14,7 +14,40 @@ import UIKit
     case minimumDelayed
 }
 
+public typealias KAAvoidBlock = (_ isKeyBoardShowing: Bool, _ animationDuration: CGFloat, _ displacement: CGFloat, _ animationOptions: UIView.AnimationOptions) -> Void
+public typealias KASubscriberAvoidBlock = (_ subscriber: Any, _ isKeyBoardShowing: Bool, _ animationDuration: CGFloat, _ displacement: CGFloat, _ animationOptions: UIView.AnimationOptions) -> Void
+
 @objc public class KeyboardAvoiding: NSObject {
+    private final class Weak<T: AnyObject>: Hashable {
+
+        private let id: ObjectIdentifier?
+        private(set) weak var value: T?
+
+        var isAlive: Bool {
+            return self.value != nil
+        }
+
+        init(_ value: T?) {
+            self.value = value
+            if let value = value {
+                self.id = ObjectIdentifier(value)
+            } else {
+                self.id = nil
+            }
+        }
+        
+        static func == (lhs: Weak<T>, rhs: Weak<T>) -> Bool {
+            return lhs.id == rhs.id
+        }
+
+        func hash(into hasher: inout Hasher) {
+            guard let id = self.id else {
+                return
+            }
+            
+            hasher.combine(id)
+        }
+    }
     
     private static var minimumAnimationDuration: CGFloat = 0.0
     private static var lastNotification: Foundation.Notification?
@@ -36,7 +69,7 @@ import UIKit
         }
     }
     public static var keyboardAvoidingMode = KeyboardAvoidingMode.minimum
-    @objc public static var avoidingBlock: ((Bool, CGFloat, CGFloat, UIView.AnimationOptions)->Void)? {
+    @objc public static var avoidingBlock: KAAvoidBlock? {
         willSet {
             self.initialise()
         }
@@ -46,6 +79,7 @@ import UIKit
             }
         }
     }
+    
     private static var _avoidingView: UIView?
     @objc public static var avoidingView: UIView? {
         get {
@@ -54,6 +88,33 @@ import UIKit
         set {
             self.setAvoidingView(newValue, withOptionalTriggerView: newValue)
         }
+    }
+    
+    private static var handlers: [Weak<AnyObject>: KAAvoidBlock] = [:]
+    
+    @objc public class func subscribe(_ subscriber: AnyObject, avoidingBlock: @escaping KASubscriberAvoidBlock) {
+        self.initialise()
+        
+        let key = Weak<AnyObject>(subscriber)
+        self.handlers = self.handlers.filter { $0.key.isAlive }
+        
+        self.handlers[key] = { [weak subscriber] in
+            guard let subscriber = subscriber else {
+                return
+            }
+            
+            avoidingBlock(subscriber, $0, $1, $2, $3)
+        }
+    }
+    
+    @objc public class func unsubscribe(_ subscriber: AnyObject) {
+        let key = Weak<AnyObject>(subscriber)
+        self.handlers[key] = nil
+    }
+    
+    private class func raise(isKeyBoardShowing: Bool, animationDuration: CGFloat, displacement: CGFloat, animationOptions: UIView.AnimationOptions) {
+        let aliveHandlers = self.handlers.filter { $0.key.isAlive }
+        aliveHandlers.forEach { $0.value(isKeyBoardShowing, animationDuration, displacement, animationOptions) }
     }
     
     class func didChange(_ notification: Foundation.Notification) {
@@ -197,6 +258,8 @@ import UIKit
                 if self.avoidingBlock != nil {
                     self.avoidingBlock!(isKeyBoardShowing, animationDuration, displacement, UIView.AnimationOptions(rawValue: UInt(animationOptions)))
                 }
+                
+                self.raise(isKeyBoardShowing: isKeyBoardShowing, animationDuration: animationDuration, displacement: displacement, animationOptions: UIView.AnimationOptions(rawValue: UInt(animationOptions)))
             }
             
         }
@@ -239,6 +302,8 @@ import UIKit
             if self.avoidingBlock != nil {
                 self.avoidingBlock!(isKeyBoardShowing, animationDuration + 0.075, 0, UIView.AnimationOptions(rawValue: UInt(animationOptions)))
             }
+            
+            self.raise(isKeyBoardShowing: isKeyBoardShowing, animationDuration: animationDuration, displacement: 0, animationOptions: UIView.AnimationOptions(rawValue: UInt(animationOptions)))
         }
         self.isKeyboardVisible = CGRect(x: CGFloat(0), y: CGFloat(0), width: CGFloat(screenSize.width), height: CGFloat(screenSize.height)).intersects(keyboardFrame)
     }
@@ -285,7 +350,7 @@ import UIKit
     
     private class func initialise() {
         // make sure we only add this once
-        if self.avoidingBlock == nil && self.avoidingView == nil {
+        if self.avoidingBlock == nil && self.avoidingView == nil && self.handlers.isEmpty {
             NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: OperationQueue.main, using: { notification in
                 // Autolayout is reset when app goes into background, so we need to dismiss the keyboard too
                 UIApplication.shared.windows.first?.rootViewController?.view.endEditing(true)
@@ -296,4 +361,3 @@ import UIKit
         }
     }
 }
-
